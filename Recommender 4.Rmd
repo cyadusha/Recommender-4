@@ -1,0 +1,146 @@
+---
+title: "Comparison with Stochastic Gradient Descent"
+author: "Yadu"
+date: "March 14, 2017"
+output: html_document
+---
+
+## Motivation
+
+We want to compare the performance of the `MovieLense` dataset recommendation systems (user-based and movie-based) with the recommendation systems built with Stochastic Gradient Descent. The metrics that will be used are area under the curve, mean absolute error, and root-mean-squared error. 
+
+## Data Utilized
+
+The dataset used here is the `MovieLense` dataset included in the `recommenderlab` package. The ratings all range between 1 and 5. Given that each user in the dataset has a maximum of 735 rated movies and a minimum of 19 rated movies, we will pick users who have not rated more than 1,400 movies so that we can facilitate better recommendations.
+
+```{r}
+library(recommenderlab)
+data(MovieLense)
+#ncol(BX) - max(rowCounts(BX))
+ML <- MovieLense[ncol(MovieLense) - rowCounts(MovieLense) > 1400]
+```
+
+## Data Splitting
+
+To evaluate the accuracy, we split the adjusted dataset into a training set and a testing set. The built-in `evaluationScheme` is used. The training set includes 80% of the adjusted dataset. The remaining 20% is the testing set. The number of items given for evaluation is 19 because in this adjusted dataset the minimum number of movies rated by a user is 19. The threshold here is the minimum rating that would be considered good which is the average of the highest rating (5) and lowest rating (1).  
+
+```{r}
+eval_sets <- evaluationScheme(data = ML, method = "split",
+train = 0.8, given = 19, goodRating = 3)
+```
+
+## Prediction Results of the User-Based Models Using Prepackaged System
+
+The user-based model is created using the original dataset containing all of the unknown values. Only the first 5 rows and columns are subsetted.  
+
+```{r}
+recc_model_u_c <- Recommender(getData(eval_sets, "train"), "UBCF", parameter = list(method = "Cosine"))
+user_cosine_p <- predict(recc_model_u_c, getData(eval_sets, "known"), type="ratings")
+as(user_cosine_p, "matrix")[1:5,1:5]
+```
+
+```{r}
+recc_model_u_p <- Recommender(getData(eval_sets, "train"), "UBCF", parameter = list(method = "Pearson"))
+user_pearson_p <- predict(recc_model_u_p, getData(eval_sets, "known"), type="ratings")
+as(user_pearson_p, "matrix")[1:5,1:5]
+```
+
+## Prediction Results of the Movie-Based Models Using Prepackaged System
+
+The movie-based models are created using the original dataset containing all of the unknown values. Only the first 5 rows and columns are subsetted.   
+
+```{r}
+library(recommenderlab)
+recc_model_m_c <- Recommender(getData(eval_sets, "train"), "IBCF", param = list(method = "Cosine"))
+movie_cosine_p <- predict(recc_model_m_c, getData(eval_sets, "known"), type="ratings")
+as(movie_cosine_p, "matrix")[1:5,1:5]
+```
+
+```{r}
+recc_model_m_p <- Recommender(getData(eval_sets, "train"), "IBCF", parameter = list(method = "Pearson"))
+movie_pearson_p <- predict(recc_model_m_p, getData(eval_sets, "known"), type="ratings")
+as(movie_pearson_p, "matrix")[1:5,1:5]
+```
+
+## Evaluation of the Models
+
+The models are evaluated with each model providing 1 to 19 recommendations per user. The time taken to run each model and prediction is outputted. So far it appears that the user-based models do not require much time.  
+
+```{r}
+models <- list(
+IBCF_cos = list(name = "IBCF", param = list(method = "cosine")),
+IBCF_cor = list(name = "IBCF", param = list(method = "pearson")),
+UBCF_cos = list(name = "UBCF", param = list(method = "cosine")),
+UBCF_cor = list(name = "UBCF", param = list(method = "pearson"))
+)
+```
+
+```{r}
+eval_results <- evaluate(x = eval_sets, method = models, n = 1:19)
+```
+
+## Stochastic Gradient Descent
+
+Now the stochastic gradient descent is implemented. The whole idea of this method is to update the weights after each training sample.
+
+```{r}
+library(rrecsys)
+MLMat <- as(ML@data, "matrix")
+MLDef <- defineData(MLMat, minimum = 1, maximum = 5, halfStar = TRUE, goodRating = 3)
+setStoppingCriteria(nrLoops = 50)
+model <- rrecsys(MLDef, "FunkSVD", k = 10, gamma = 0.1, lambda = 0.001)
+```
+
+The ratings are predicted as follows. Only the first 5 rows and columns are subsetted.   
+
+```{r}
+predict(model, Round = F)[1:5, 1:5]
+```
+
+The top 3 movies for each user are rendered as per the stochastic gradient descent.
+
+```{r}
+tops <- recommend(model)
+```
+
+## Prediction Accuracy of the Recommenders
+
+The following metrics measure the accuracy of all the recommenders. They are the the area under the curve, root-mean-squared error, and the mean-absolute error.
+
+```{r, echo=FALSE}
+library(flux)
+area_under_curves <- function(i){
+  r <- avg(eval_results)[[i]]
+  calc_auc <- auc(r[,8], r[,7])
+  return(calc_auc)
+} 
+```
+
+```{r, echo=FALSE}
+a1 <- matrix(as.vector(c(as.matrix(calcPredictionAccuracy(user_cosine_p, getData(eval_sets, "unknown")))[-2,], area_under_curves(1))))
+rownames(a1) <- c("RMSE", "MAE", "AUC")
+
+a2 <- matrix(as.vector(c(as.matrix(calcPredictionAccuracy(user_pearson_p, getData(eval_sets, "unknown")))[-2,], area_under_curves(2))))
+rownames(a2) <- rownames(a1)
+
+a3 <- matrix(as.vector(c(as.matrix(calcPredictionAccuracy(movie_cosine_p, getData(eval_sets, "unknown")))[-2,], area_under_curves(3))))
+rownames(a3) <- rownames(a1)
+
+a4 <- matrix(as.vector(c(as.matrix(calcPredictionAccuracy(movie_pearson_p, getData(eval_sets, "unknown")))[-2,], area_under_curves(4))))
+rownames(a4) <- rownames(a1)
+
+e <- evalModel(MLDef, 5)
+evaluations <- evalPred(e, "FunkSVD", k = 1)
+auc_stochastic <- getAUC(e, "FunkSVD", k = 1)[6,]
+a5 <- matrix(c(evaluations[6,2:1], auc_stochastic))
+rownames(a5) <- rownames(a1)
+```
+
+```{r}
+library(knitr)
+kable(data.frame(a1, a2, a3, a4, a5), col.names = c("User-Based Cosine", "User-Based Pearson", "Movie-Based Cosine", "Movie-Based Pearson", "Stochastic Gradient Descent"))
+```
+
+## Conclusion
+
+Although the stochastic gradient descent model takes a little longer than the user-based models, it is the best model to use for prediction. The reason is that the root-mean-squared error and the mean-absolute error are the lowest. Also, the area under the curve yielded is the highest. 
